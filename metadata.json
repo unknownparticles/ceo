@@ -1,0 +1,6 @@
+{
+  "name": "一分钟老板",
+  "description": "给你 60 秒写下离谱商业策划，由 AI 实时推演严肃而荒诞的连锁商业事件。在倒计时中做出决策，拯救或毁掉你的商业帝国！",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
