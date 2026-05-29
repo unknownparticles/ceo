@@ -27,11 +27,13 @@ import {
   Volume2,
   VolumeX,
   History,
-  Trash2
+  Trash2,
+  Settings
 } from "lucide-react";
 import { CompanyStats, GameEvent, GameSetup, GameSettlement, HistoryItem } from "./types";
 import { PRESET_GOALS, FUN_LOADING_MESSAGES } from "./data";
 import { playSound } from "./utils/audio";
+import { AI_PROVIDERS, ApiKeySettings, analyzeBusinessPlan, completeAbsurdPlan, emptyApiKeySettings, executeDecision, generateAbsurdGoal, getProviderLabel, loadApiKeySettings, resolveActiveProvider, saveApiKeySettings, settleGame } from "./ai";
 
 export default function App() {
   // Game screens: 'intro' | 'loading' | 'playing' | 'settlement'
@@ -55,6 +57,9 @@ export default function App() {
   const [customGoal, setCustomGoal] = useState("");
   const [customPlan, setCustomPlan] = useState("");
   const [activePresetId, setActivePresetId] = useState<string | null>(null);
+  const [isGeneratingGoal, setIsGeneratingGoal] = useState(false);
+  const [isCompletingPlan, setIsCompletingPlan] = useState(false);
+  const [isDecisionPending, setIsDecisionPending] = useState(false);
 
   // Active game session state
   const [setup, setSetup] = useState<GameSetup | null>(null);
@@ -74,6 +79,7 @@ export default function App() {
   }]);
   
   const [currentEvent, setCurrentEvent] = useState<GameEvent | null>(null);
+  const isDecisionPendingRef = useRef(false);
   const [roundHistory, setRoundHistory] = useState<Array<{
     roundNum: number;
     story: string;
@@ -102,6 +108,8 @@ export default function App() {
   // Play records history (Stored in LocalStorage)
   const [historyList, setHistoryList] = useState<HistoryItem[]>([]);
   const [showHistorySidebar, setShowHistorySidebar] = useState(false);
+  const [showSettingsPanel, setShowSettingsPanel] = useState(false);
+  const [apiSettings, setApiSettings] = useState<ApiKeySettings>(() => emptyApiKeySettings());
 
   // Rotation text loader
   const [currentLoaderText, setCurrentLoaderText] = useState(FUN_LOADING_MESSAGES[0]);
@@ -129,10 +137,28 @@ export default function App() {
       if (stored) {
         setHistoryList(JSON.parse(stored));
       }
+      setApiSettings(loadApiKeySettings());
     } catch (e) {
       console.error(e);
     }
   }, []);
+
+
+  useEffect(() => {
+    saveApiKeySettings(apiSettings);
+  }, [apiSettings]);
+
+  const updateApiKey = (providerId: keyof ApiKeySettings["keys"], value: string) => {
+    setApiSettings(prev => ({
+      ...prev,
+      keys: {
+        ...prev.keys,
+        [providerId]: value
+      }
+    }));
+  };
+
+  const activeAiProvider = resolveActiveProvider(apiSettings);
 
   // Set default initial goal text
   useEffect(() => {
@@ -211,6 +237,54 @@ export default function App() {
     setActivePresetId(null);
   };
 
+  const ensureProviderForAiAssist = () => {
+    if (resolveActiveProvider(apiSettings)) return true;
+    showAlert("请先在 API 设置里填写至少一个 Key，才能使用 AI 生成目标或补齐方案。", "AI助手需要API Key", "warning");
+    setShowSettingsPanel(true);
+    return false;
+  };
+
+  const aiGenerateGoal = async () => {
+    triggerSound('click');
+    if (!ensureProviderForAiAssist()) return;
+
+    setIsGeneratingGoal(true);
+    try {
+      const generated = await generateAbsurdGoal(apiSettings);
+      setCustomGoal(generated.targetGoal);
+      setCustomPlan(generated.planSummary);
+      setActivePresetId(null);
+      triggerSound('success');
+    } catch (err: any) {
+      showAlert(err.message || "AI 目标生成失败，请切换供应商或稍后重试。", "离谱目标生成失败", "error");
+      triggerSound('failure');
+    } finally {
+      setIsGeneratingGoal(false);
+    }
+  };
+
+  const aiCompletePlan = async () => {
+    triggerSound('click');
+    if (!ensureProviderForAiAssist()) return;
+    if (!customGoal.trim()) {
+      showAlert("请先输入一个商业目标，AI 才能沿着这个方向补齐实现方案。", "缺少目标", "warning");
+      return;
+    }
+
+    setIsCompletingPlan(true);
+    try {
+      const plan = await completeAbsurdPlan(apiSettings, customGoal);
+      setCustomPlan(plan);
+      setActivePresetId(null);
+      triggerSound('success');
+    } catch (err: any) {
+      showAlert(err.message || "AI 方案补齐失败，请切换供应商或稍后重试。", "补齐方案失败", "error");
+      triggerSound('failure');
+    } finally {
+      setIsCompletingPlan(false);
+    }
+  };
+
   // Launch analysis
   const startBusinessSimulation = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -219,11 +293,19 @@ export default function App() {
       return;
     }
 
+    if (!resolveActiveProvider(apiSettings)) {
+      showAlert("开始游戏前必须至少填写 DeepSeek、MiniMax、GLM、Kimi、Gemini 中任意一个 API Key。系统会默认调用第一个有值的供应商，也可以在设置里手动切换。", "请先配置API设置", "warning");
+      setShowSettingsPanel(true);
+      return;
+    }
+
     triggerSound('startup');
     setScreen('loading');
     setLatestFeedback(null);
     setLatestDeltas(null);
     setRoundHistory([]);
+    isDecisionPendingRef.current = false;
+    setIsDecisionPending(false);
     setTotalSecondsLeft(60);
     setRoundSecondsLeft(12);
     setStats({
@@ -242,18 +324,7 @@ export default function App() {
     }]);
 
     try {
-      const res = await fetch("/api/game/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          targetGoal: customGoal,
-          planSummary: customPlan
-        })
-      });
-      const data = await res.json();
-      if (res.status !== 200 || data.error) {
-        throw new Error(data.error || "发生了未知解析错误");
-      }
+      const data = await analyzeBusinessPlan(apiSettings, customGoal, customPlan);
 
       setSetup({
         companyName: data.companyName,
@@ -274,7 +345,9 @@ export default function App() {
 
   // Make a decision
   const handleOptionSelect = async (chosenOption: string, optionTeaser: string) => {
-    if (!setup || !currentEvent) return;
+    if (!setup || !currentEvent || isDecisionPendingRef.current) return;
+    isDecisionPendingRef.current = true;
+    setIsDecisionPending(true);
     triggerSound('click');
 
     // Display temporary loading block
@@ -290,20 +363,12 @@ export default function App() {
       roundNum: currentEvent.roundNum,
       chosenOptionText: chosenOption,
       stats: stats,
-      previousHistory: previousHistorySimp
+      previousHistory: previousHistorySimp,
+      previousEventOptions: currentEvent.options.map(option => `${option.text} => ${option.consequence}`)
     };
 
     try {
-      const res = await fetch("/api/game/decision", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-
-      if (res.status !== 200 || data.error) {
-        throw new Error(data.error || "决策计算遇到风暴");
-      }
+      const data = await executeDecision(apiSettings, payload);
 
       // Track statistic deltas relative to previous stats
       const diffFinance = data.stats.finance - stats.finance;
@@ -350,13 +415,16 @@ export default function App() {
         setCurrentEvent(data.nextEvent);
       }
     } catch (err: any) {
-      showAlert(err.message || "推演网络卡顿，请重试选项！", "决策执行受阻", "error");
+      showAlert(err.message || "推演网络卡顿，请重试选项！如果看起来点不动，通常是供应商接口/CORS或Key错误导致请求失败。", "决策执行受阻", "error");
+    } finally {
+      isDecisionPendingRef.current = false;
+      setIsDecisionPending(false);
     }
   };
 
   // Automatically select a random option on timer exhaustion
   const autoChooseOnTimeout = () => {
-    if (!currentEvent) return;
+    if (!currentEvent || isDecisionPendingRef.current) return;
     const randomIndex = Math.floor(Math.random() * currentEvent.options.length);
     const fallbackOption = currentEvent.options[randomIndex];
     handleOptionSelect(fallbackOption.text, fallbackOption.consequence);
@@ -376,22 +444,14 @@ export default function App() {
     setCurrentLoaderText("召开董事会紧急弹劾会议 / 准备PPT分红大会中...");
 
     try {
-      const res = await fetch("/api/game/settle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          companyName: setup.companyName,
-          targetGoal: setup.targetGoal,
-          personality: setup.personality,
-          stats: finalStats,
-          history: finalHistory,
-          gameOverReason: reason
-        })
+      const data = await settleGame(apiSettings, {
+        companyName: setup.companyName,
+        targetGoal: setup.targetGoal,
+        personality: setup.personality,
+        stats: finalStats,
+        history: finalHistory,
+        gameOverReason: reason
       });
-      const data = await res.json();
-      if (res.status !== 200 || data.error) {
-        throw new Error(data.error || "清算局暴雷，无法破产");
-      }
 
       setSettlement({
         ...data,
@@ -464,6 +524,8 @@ export default function App() {
     setCurrentEvent(null);
     setSettlement(null);
     setRoundHistory([]);
+    isDecisionPendingRef.current = false;
+    setIsDecisionPending(false);
     setTotalSecondsLeft(60);
     setRoundSecondsLeft(12);
   };
@@ -492,6 +554,20 @@ export default function App() {
 
         {/* Global Toolbar */}
         <div className="flex items-center space-x-2 md:space-x-3">
+          <button
+            onClick={() => {
+              triggerSound('click');
+              setShowSettingsPanel(!showSettingsPanel);
+            }}
+            className={`p-2 rounded border transition text-xs flex items-center ${
+              activeAiProvider ? "border-cyan-800 text-cyan-300 bg-cyan-950/20" : "border-rose-800 text-rose-300 bg-rose-950/20 animate-pulse"
+            }`}
+            title="API设置"
+          >
+            <Settings className="w-4 h-4" />
+            <span className="ml-1 hidden md:inline">API：{activeAiProvider ? getProviderLabel(activeAiProvider.id) : "未配置"}</span>
+          </button>
+
           <button 
             onClick={() => setSoundEnabled(!soundEnabled)}
             className={`p-2 rounded border transition text-xs flex items-center ${
@@ -515,6 +591,83 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {showSettingsPanel && (
+        <div className="fixed inset-0 z-30 bg-slate-950/70 backdrop-blur-sm flex items-start justify-center p-4 pt-20" onClick={() => setShowSettingsPanel(false)}>
+          <div className="w-full max-w-2xl bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-5 md:p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4 mb-5">
+              <div>
+                <h2 className="text-lg font-display font-bold text-slate-100 flex items-center">
+                  <Settings className="w-5 h-5 mr-2 text-cyan-300" />
+                  API 设置 / GitHub Pages 静态版
+                </h2>
+                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                  所有 Key 仅保存在当前浏览器 LocalStorage 中。开始游戏前必须至少填写一个 Key；自动模式会按 DeepSeek → MiniMax → GLM → Kimi → Gemini 的顺序调用第一个有值的供应商。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSettingsPanel(false)}
+                className="text-slate-500 hover:text-slate-200 border border-slate-800 hover:border-slate-700 rounded-lg px-3 py-1 text-xs font-mono"
+              >
+                关闭
+              </button>
+            </div>
+
+            <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-3 mb-4">
+              <label className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-2">当前调用供应商</label>
+              <select
+                value={apiSettings.activeProviderId}
+                onChange={(e) => setApiSettings(prev => ({ ...prev, activeProviderId: e.target.value as ApiKeySettings["activeProviderId"] }))}
+                className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-400 rounded-lg px-3 py-2 text-sm text-slate-200 outline-none"
+              >
+                <option value="auto">自动选择第一个有值的 Key（推荐）</option>
+                {AI_PROVIDERS.map(provider => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.label}{apiSettings.keys[provider.id]?.trim() ? " · 已填写" : " · 未填写"}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[11px] text-slate-500 mt-2 font-mono">
+                实际将调用：<span className={activeAiProvider ? "text-cyan-300" : "text-rose-300"}>{activeAiProvider ? getProviderLabel(activeAiProvider.id) : "尚未配置任何 Key"}</span>
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {AI_PROVIDERS.map(provider => (
+                <div key={provider.id} className="bg-slate-950/45 border border-slate-800 rounded-xl p-3">
+                  <label className="flex items-center justify-between text-xs font-mono text-slate-300 mb-2">
+                    <span>{provider.label}</span>
+                    <span className="text-[10px] text-slate-500">{provider.model}</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={apiSettings.keys[provider.id]}
+                    onChange={(e) => updateApiKey(provider.id, e.target.value)}
+                    placeholder={provider.apiKeyHelp}
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-400 rounded-lg px-3 py-2 text-xs text-slate-200 placeholder-slate-600 outline-none"
+                    autoComplete="off"
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-5 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between text-[11px] text-slate-500 font-mono">
+              <span>提示：如果某供应商浏览器跨域受限，请切换到其他支持 Web 调用的供应商。</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setApiSettings(emptyApiKeySettings());
+                  triggerSound('click');
+                }}
+                className="text-rose-300 hover:text-rose-200 border border-rose-900/60 hover:border-rose-700 rounded-lg px-3 py-2"
+              >
+                清空全部 Key
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Container */}
       <main className="flex-1 flex flex-col items-center justify-start max-w-7xl w-full mx-auto p-4 md:p-6 relative z-10">
@@ -588,7 +741,28 @@ export default function App() {
                     className="flex-1 min-w-[120px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-3 rounded-lg text-xs font-medium font-mono border border-slate-700 hover:border-slate-600 transition flex items-center justify-center space-x-1.5"
                   >
                     <Sparkles className="w-4 h-4 text-amber-400" />
-                    <span>随机脑洞大开</span>
+                    <span>预设随机</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={aiGenerateGoal}
+                    disabled={isGeneratingGoal}
+                    className="flex-1 min-w-[150px] bg-violet-950/70 hover:bg-violet-900 disabled:opacity-60 disabled:cursor-wait text-violet-100 px-4 py-3 rounded-lg text-xs font-medium font-mono border border-violet-800 hover:border-violet-600 transition flex items-center justify-center space-x-1.5"
+                  >
+                    <Sparkles className={`w-4 h-4 text-violet-300 ${isGeneratingGoal ? "animate-spin" : ""}`} />
+                    <span>{isGeneratingGoal ? "AI脑暴中..." : "AI生成离谱目标"}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={aiCompletePlan}
+                    disabled={isCompletingPlan || !customGoal.trim()}
+                    className="flex-1 min-w-[160px] bg-cyan-950/70 hover:bg-cyan-900 disabled:opacity-50 disabled:cursor-not-allowed text-cyan-100 px-4 py-3 rounded-lg text-xs font-medium font-mono border border-cyan-800 hover:border-cyan-600 transition flex items-center justify-center space-x-1.5"
+                    title={customGoal.trim() ? "根据目标一键补齐方案" : "请先输入目标"}
+                  >
+                    <Terminal className={`w-4 h-4 text-cyan-300 ${isCompletingPlan ? "animate-pulse" : ""}`} />
+                    <span>{isCompletingPlan ? "补齐中..." : "AI补齐实现方案"}</span>
                   </button>
 
                   {customGoal && (
@@ -616,7 +790,7 @@ export default function App() {
               <div className="mt-6 pt-4 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500 font-mono">
                 <span className="flex items-center text-emerald-500/80">
                   <Terminal className="w-3.5 h-3.5 mr-1" />
-                  AI 严肃现实主义引擎就绪
+                  AI 严肃现实主义引擎：{activeAiProvider ? getProviderLabel(activeAiProvider.id) : "待配置"}
                 </span>
                 <span>响应速度：&lt;3.5秒</span>
               </div>
@@ -901,16 +1075,18 @@ export default function App() {
                 {currentEvent && (
                   <div className="space-y-2.5" id="decision_button_container">
                     <span className="text-[10px] font-mono uppercase font-semibold text-slate-500 tracking-wider block mb-1">
-                      👇 请在倒计时结束前做出执政决断（选项）：
+                      👇 请在倒计时结束前做出执政决断（选项）：{isDecisionPending ? " AI董事会正在结算本次选择，请稍候..." : ""}
                     </span>
 
                     {currentEvent.options.map((option, index) => {
                       const optAbc = ["A", "B", "C"][index];
                       return (
                         <button
-                          key={index}
+                          key={`${currentEvent.id}-${index}-${option.text}`}
+                          type="button"
+                          disabled={isDecisionPending}
                           onClick={() => handleOptionSelect(option.text, option.consequence)}
-                          className="w-full bg-slate-900 hover:bg-slate-850 border border-slate-800 hover:border-slate-700/80 active:translate-y-0.5 rounded-xl p-4 text-left font-mono transition group relative overflow-hidden flex items-start space-x-3.5 focus:outline-none"
+                          className="w-full bg-slate-900 hover:bg-slate-850 disabled:opacity-55 disabled:cursor-wait border border-slate-800 hover:border-slate-700/80 active:translate-y-0.5 rounded-xl p-4 text-left font-mono transition group relative overflow-hidden flex items-start space-x-3.5 focus:outline-none"
                         >
                           {/* Option Prefix Letter badge */}
                           <div className="h-7 w-7 rounded bg-slate-950 border border-slate-800 text-amber-400 group-hover:text-slate-950 group-hover:bg-amber-400 font-bold flex items-center justify-center shrink-0 transition text-sm">
@@ -918,6 +1094,9 @@ export default function App() {
                           </div>
 
                           <div className="flex-1 min-w-0">
+                            {isDecisionPending && (
+                              <span className="text-[9px] text-cyan-300 font-mono uppercase tracking-wider block mb-1">处理中 · 防止重复点击</span>
+                            )}
                             <p className="text-xs text-slate-200 group-hover:text-slate-50 font-sans leading-relaxed font-semibold">
                               {option.text}
                             </p>
