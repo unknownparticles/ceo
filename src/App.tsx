@@ -33,7 +33,7 @@ import {
 import { CompanyStats, GameEvent, GameSetup, GameSettlement, HistoryItem } from "./types";
 import { PRESET_GOALS, FUN_LOADING_MESSAGES } from "./data";
 import { playSound } from "./utils/audio";
-import { AI_PROVIDERS, ApiKeySettings, analyzeBusinessPlan, emptyApiKeySettings, executeDecision, getProviderLabel, loadApiKeySettings, resolveActiveProvider, saveApiKeySettings, settleGame } from "./ai";
+import { AI_PROVIDERS, ApiKeySettings, analyzeBusinessPlan, completeAbsurdPlan, emptyApiKeySettings, executeDecision, generateAbsurdGoal, getProviderLabel, loadApiKeySettings, resolveActiveProvider, saveApiKeySettings, settleGame } from "./ai";
 
 export default function App() {
   // Game screens: 'intro' | 'loading' | 'playing' | 'settlement'
@@ -57,6 +57,9 @@ export default function App() {
   const [customGoal, setCustomGoal] = useState("");
   const [customPlan, setCustomPlan] = useState("");
   const [activePresetId, setActivePresetId] = useState<string | null>(null);
+  const [isGeneratingGoal, setIsGeneratingGoal] = useState(false);
+  const [isCompletingPlan, setIsCompletingPlan] = useState(false);
+  const [isDecisionPending, setIsDecisionPending] = useState(false);
 
   // Active game session state
   const [setup, setSetup] = useState<GameSetup | null>(null);
@@ -76,6 +79,7 @@ export default function App() {
   }]);
   
   const [currentEvent, setCurrentEvent] = useState<GameEvent | null>(null);
+  const isDecisionPendingRef = useRef(false);
   const [roundHistory, setRoundHistory] = useState<Array<{
     roundNum: number;
     story: string;
@@ -233,6 +237,54 @@ export default function App() {
     setActivePresetId(null);
   };
 
+  const ensureProviderForAiAssist = () => {
+    if (resolveActiveProvider(apiSettings)) return true;
+    showAlert("请先在 API 设置里填写至少一个 Key，才能使用 AI 生成目标或补齐方案。", "AI助手需要API Key", "warning");
+    setShowSettingsPanel(true);
+    return false;
+  };
+
+  const aiGenerateGoal = async () => {
+    triggerSound('click');
+    if (!ensureProviderForAiAssist()) return;
+
+    setIsGeneratingGoal(true);
+    try {
+      const generated = await generateAbsurdGoal(apiSettings);
+      setCustomGoal(generated.targetGoal);
+      setCustomPlan(generated.planSummary);
+      setActivePresetId(null);
+      triggerSound('success');
+    } catch (err: any) {
+      showAlert(err.message || "AI 目标生成失败，请切换供应商或稍后重试。", "离谱目标生成失败", "error");
+      triggerSound('failure');
+    } finally {
+      setIsGeneratingGoal(false);
+    }
+  };
+
+  const aiCompletePlan = async () => {
+    triggerSound('click');
+    if (!ensureProviderForAiAssist()) return;
+    if (!customGoal.trim()) {
+      showAlert("请先输入一个商业目标，AI 才能沿着这个方向补齐实现方案。", "缺少目标", "warning");
+      return;
+    }
+
+    setIsCompletingPlan(true);
+    try {
+      const plan = await completeAbsurdPlan(apiSettings, customGoal);
+      setCustomPlan(plan);
+      setActivePresetId(null);
+      triggerSound('success');
+    } catch (err: any) {
+      showAlert(err.message || "AI 方案补齐失败，请切换供应商或稍后重试。", "补齐方案失败", "error");
+      triggerSound('failure');
+    } finally {
+      setIsCompletingPlan(false);
+    }
+  };
+
   // Launch analysis
   const startBusinessSimulation = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -252,6 +304,8 @@ export default function App() {
     setLatestFeedback(null);
     setLatestDeltas(null);
     setRoundHistory([]);
+    isDecisionPendingRef.current = false;
+    setIsDecisionPending(false);
     setTotalSecondsLeft(60);
     setRoundSecondsLeft(12);
     setStats({
@@ -291,7 +345,9 @@ export default function App() {
 
   // Make a decision
   const handleOptionSelect = async (chosenOption: string, optionTeaser: string) => {
-    if (!setup || !currentEvent) return;
+    if (!setup || !currentEvent || isDecisionPendingRef.current) return;
+    isDecisionPendingRef.current = true;
+    setIsDecisionPending(true);
     triggerSound('click');
 
     // Display temporary loading block
@@ -307,7 +363,8 @@ export default function App() {
       roundNum: currentEvent.roundNum,
       chosenOptionText: chosenOption,
       stats: stats,
-      previousHistory: previousHistorySimp
+      previousHistory: previousHistorySimp,
+      previousEventOptions: currentEvent.options.map(option => `${option.text} => ${option.consequence}`)
     };
 
     try {
@@ -358,13 +415,16 @@ export default function App() {
         setCurrentEvent(data.nextEvent);
       }
     } catch (err: any) {
-      showAlert(err.message || "推演网络卡顿，请重试选项！", "决策执行受阻", "error");
+      showAlert(err.message || "推演网络卡顿，请重试选项！如果看起来点不动，通常是供应商接口/CORS或Key错误导致请求失败。", "决策执行受阻", "error");
+    } finally {
+      isDecisionPendingRef.current = false;
+      setIsDecisionPending(false);
     }
   };
 
   // Automatically select a random option on timer exhaustion
   const autoChooseOnTimeout = () => {
-    if (!currentEvent) return;
+    if (!currentEvent || isDecisionPendingRef.current) return;
     const randomIndex = Math.floor(Math.random() * currentEvent.options.length);
     const fallbackOption = currentEvent.options[randomIndex];
     handleOptionSelect(fallbackOption.text, fallbackOption.consequence);
@@ -464,6 +524,8 @@ export default function App() {
     setCurrentEvent(null);
     setSettlement(null);
     setRoundHistory([]);
+    isDecisionPendingRef.current = false;
+    setIsDecisionPending(false);
     setTotalSecondsLeft(60);
     setRoundSecondsLeft(12);
   };
@@ -679,7 +741,28 @@ export default function App() {
                     className="flex-1 min-w-[120px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-3 rounded-lg text-xs font-medium font-mono border border-slate-700 hover:border-slate-600 transition flex items-center justify-center space-x-1.5"
                   >
                     <Sparkles className="w-4 h-4 text-amber-400" />
-                    <span>随机脑洞大开</span>
+                    <span>预设随机</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={aiGenerateGoal}
+                    disabled={isGeneratingGoal}
+                    className="flex-1 min-w-[150px] bg-violet-950/70 hover:bg-violet-900 disabled:opacity-60 disabled:cursor-wait text-violet-100 px-4 py-3 rounded-lg text-xs font-medium font-mono border border-violet-800 hover:border-violet-600 transition flex items-center justify-center space-x-1.5"
+                  >
+                    <Sparkles className={`w-4 h-4 text-violet-300 ${isGeneratingGoal ? "animate-spin" : ""}`} />
+                    <span>{isGeneratingGoal ? "AI脑暴中..." : "AI生成离谱目标"}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={aiCompletePlan}
+                    disabled={isCompletingPlan || !customGoal.trim()}
+                    className="flex-1 min-w-[160px] bg-cyan-950/70 hover:bg-cyan-900 disabled:opacity-50 disabled:cursor-not-allowed text-cyan-100 px-4 py-3 rounded-lg text-xs font-medium font-mono border border-cyan-800 hover:border-cyan-600 transition flex items-center justify-center space-x-1.5"
+                    title={customGoal.trim() ? "根据目标一键补齐方案" : "请先输入目标"}
+                  >
+                    <Terminal className={`w-4 h-4 text-cyan-300 ${isCompletingPlan ? "animate-pulse" : ""}`} />
+                    <span>{isCompletingPlan ? "补齐中..." : "AI补齐实现方案"}</span>
                   </button>
 
                   {customGoal && (
@@ -992,16 +1075,18 @@ export default function App() {
                 {currentEvent && (
                   <div className="space-y-2.5" id="decision_button_container">
                     <span className="text-[10px] font-mono uppercase font-semibold text-slate-500 tracking-wider block mb-1">
-                      👇 请在倒计时结束前做出执政决断（选项）：
+                      👇 请在倒计时结束前做出执政决断（选项）：{isDecisionPending ? " AI董事会正在结算本次选择，请稍候..." : ""}
                     </span>
 
                     {currentEvent.options.map((option, index) => {
                       const optAbc = ["A", "B", "C"][index];
                       return (
                         <button
-                          key={index}
+                          key={`${currentEvent.id}-${index}-${option.text}`}
+                          type="button"
+                          disabled={isDecisionPending}
                           onClick={() => handleOptionSelect(option.text, option.consequence)}
-                          className="w-full bg-slate-900 hover:bg-slate-850 border border-slate-800 hover:border-slate-700/80 active:translate-y-0.5 rounded-xl p-4 text-left font-mono transition group relative overflow-hidden flex items-start space-x-3.5 focus:outline-none"
+                          className="w-full bg-slate-900 hover:bg-slate-850 disabled:opacity-55 disabled:cursor-wait border border-slate-800 hover:border-slate-700/80 active:translate-y-0.5 rounded-xl p-4 text-left font-mono transition group relative overflow-hidden flex items-start space-x-3.5 focus:outline-none"
                         >
                           {/* Option Prefix Letter badge */}
                           <div className="h-7 w-7 rounded bg-slate-950 border border-slate-800 text-amber-400 group-hover:text-slate-950 group-hover:bg-amber-400 font-bold flex items-center justify-center shrink-0 transition text-sm">
@@ -1009,6 +1094,9 @@ export default function App() {
                           </div>
 
                           <div className="flex-1 min-w-0">
+                            {isDecisionPending && (
+                              <span className="text-[9px] text-cyan-300 font-mono uppercase tracking-wider block mb-1">处理中 · 防止重复点击</span>
+                            )}
                             <p className="text-xs text-slate-200 group-hover:text-slate-50 font-sans leading-relaxed font-semibold">
                               {option.text}
                             </p>

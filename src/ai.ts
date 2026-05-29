@@ -95,6 +95,28 @@ export const getProviderLabel = (providerId: AiProviderId | "auto") => {
   return AI_PROVIDERS.find((provider) => provider.id === providerId)?.label || providerId;
 };
 
+
+const ABSURD_GOAL_FALLBACKS = [
+  {
+    targetGoal: "用会计章鱼建立全球发票海啸交易所，垄断所有公司报销入口",
+    planSummary: "在每个财务室投放一只佩戴蓝牙算盘的章鱼，用触手同时盖章、审票和预测现金流。把墨汁包装成合规区块链水印，向所有报销人征收‘触手验证服务费’。",
+  },
+  {
+    targetGoal: "把城市早高峰堵车改造成移动火锅供应链，并在红绿灯处完成上市路演",
+    planSummary: "给每辆堵车汽车安装鸳鸯锅底模块，由外卖骑手担任流动投行顾问。红灯时开锅融资，绿灯时转场路演，最终把尾气热能包装成低碳餐饮闭环。",
+  },
+  {
+    targetGoal: "收购全网失眠用户的梦境版权，训练一只专门写年报的枕头大模型",
+    planSummary: "推出付费午睡仓，用户每做一个荒诞梦就自动生成一段商业洞察。再把梦话转译成财报黑话，卖给需要故事但没有利润的上市公司。",
+  },
+  {
+    targetGoal: "用共享鸽子重构全球快递网络，让每一坨鸟粪都成为精准营销触点",
+    planSummary: "给城市鸽子佩戴微型二维码背心，按飞行轨迹收取跨境物流费。落点误差被包装成随机种草算法，鸟粪则作为高黏性户外广告资源出售。",
+  },
+];
+
+const makeFallbackGoal = () => ABSURD_GOAL_FALLBACKS[Math.floor(Math.random() * ABSURD_GOAL_FALLBACKS.length)];
+
 export const resolveActiveProvider = (settings: ApiKeySettings) => {
   const filledProviders = AI_PROVIDERS.filter((provider) => settings.keys[provider.id]?.trim());
   if (filledProviders.length === 0) return null;
@@ -141,6 +163,44 @@ function clampScore(value: number) {
   return Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
 }
 
+function optionFingerprint(value: string) {
+  return value
+    .replace(/[\s，。！？、,.!?；;：“”"'（）()【】\[\]]/g, "")
+    .replace(/^(立刻|马上|直接|宣布|召开|启动|把|将|用|通过)/, "")
+    .slice(0, 28);
+}
+
+function buildFallbackOptions(fallbackRound: number): Array<{ text: string; consequence: string }> {
+  const banks = [
+    [
+      { text: "召开全员降本大会，把会议室空调外包给两只电风扇并发行节能白皮书。", consequence: "财务小幅回暖，但员工开始用离职信折纸飞机" },
+      { text: "宣布高风险资本跃迁，把所有预算砸向一台会喊口号的概念样机。", consequence: "完成度可能暴涨，但合规风险像火箭尾焰一样升空" },
+      { text: "把锅转让给隔壁临时孵化器，用一份玄学并购协议重新包装责任主体。", consequence: "舆论短暂混乱，但后续追责链条变得更加魔幻" },
+    ],
+    [
+      { text: "把公司打印纸裁成三等份，宣布进入纳米级办公耗材精益化改革。", consequence: "现金流止血两滴，但行政部开始集体研究跳槽玄学" },
+      { text: "租下商场中庭举办无人机融资舞狮，把样品绑在狮头上空投给投资人。", consequence: "热度爆炸式上升，同时消防、城管与风控部门同步抵达" },
+      { text: "成立临时子公司‘不是我们干的科技’，把全部历史债务迁入其企业邮箱。", consequence: "追债路径短暂迷路，但工商系统对你露出了慈祥冷笑" },
+    ],
+    [
+      { text: "把茶水间改造成付费联合办公宇宙，员工接水需购买月度生态席位。", consequence: "收入模型出现幻觉式增长，员工满意度被蒸发成水雾" },
+      { text: "抵押老板的未来朋友圈点赞权，换取一轮命名为Pre-玄学的桥接融资。", consequence: "项目进度被强行抬高，但投资人要求审计你的表情包资产" },
+      { text: "对外宣称当前危机是竞品做的沉浸式压力测试，并反向索赔品牌体验费。", consequence: "舆论被搅成豆浆，但法务团队已经开始写遗书式备忘录" },
+    ],
+    [
+      { text: "把客服热线改成老板录制的成功学彩铃，减少真实人工接触带来的成本污染。", consequence: "开支下降明显，客户怒气则形成可观测的黑洞级口碑坍缩" },
+      { text: "邀请三百名网红在仓库直播拆空气盲盒，声称这是无库存商业的终极形态。", consequence: "曝光量瞬间拉满，欺诈风险也同步完成火箭级点火" },
+      { text: "把核心合同翻译成古埃及象形文字，拖延所有债主的尽调阅读速度。", consequence: "短期争取到时间，但翻译协会和法院同时对你产生兴趣" },
+    ],
+  ];
+
+  return banks[(fallbackRound - 1) % banks.length];
+}
+
+function normalizeUniqueOptions(event: Partial<GameEvent>, fallbackRound: number): GameEvent {
+  const seen = new Set<string>();
+  const rawOptions = Array.isArray(event.options) ? event.options : [];
+  const fallbackOptions = buildFallbackOptions(fallbackRound);
 function normalizeUniqueOptions(event: Partial<GameEvent>, fallbackRound: number): GameEvent {
   const seen = new Set<string>();
   const rawOptions = Array.isArray(event.options) ? event.options : [];
@@ -157,7 +217,7 @@ function normalizeUniqueOptions(event: Partial<GameEvent>, fallbackRound: number
       consequence: (option.consequence || "后果尚未披露，但董事会已经开始冒汗").trim(),
     }))
     .filter((option) => {
-      const key = `${option.text}|${option.consequence}`;
+      const key = `${optionFingerprint(option.text)}|${optionFingerprint(option.consequence)}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -165,7 +225,11 @@ function normalizeUniqueOptions(event: Partial<GameEvent>, fallbackRound: number
     .slice(0, 3);
 
   while (options.length < 3) {
-    options.push(fallbackOptions[options.length]);
+    const fallback = fallbackOptions[options.length % fallbackOptions.length];
+    options.push({
+      text: `${fallback.text}（第${fallbackRound}阶段备选）`,
+      consequence: fallback.consequence,
+    });
   }
 
   return {
@@ -270,6 +334,7 @@ export async function executeDecision(settings: ApiKeySettings, payload: {
   chosenOptionText: string;
   stats: CompanyStats;
   previousHistory: string[];
+  previousEventOptions?: string[];
 }) {
   const nextRoundNum = (payload.roundNum || 1) + 1;
   const isClimax = nextRoundNum === 5;
@@ -278,6 +343,7 @@ export async function executeDecision(settings: ApiKeySettings, payload: {
 上一轮选择：【${payload.chosenOptionText}】。
 当前状态：${JSON.stringify(payload.stats)}。
 过去历史：${JSON.stringify(payload.previousHistory || [])}。
+上一题全部选项（下一题禁止重复这些核心动作）：${JSON.stringify(payload.previousEventOptions || [])}。
 
 请计算决策后果并生成第 ${nextRoundNum} 轮${isClimax ? "高潮终局" : "商业风暴"}事件，返回 JSON：
 {
@@ -335,6 +401,45 @@ export async function executeDecision(settings: ApiKeySettings, payload: {
     isGameOver,
     gameOverReason,
   };
+}
+
+export async function generateAbsurdGoal(settings: ApiKeySettings) {
+  const prompt = `
+请随机生成一个全新的“一分钟老板”离谱创业目标和实现方案，必须比普通预设更荒诞，但仍像商业策划书。
+要求返回 JSON：
+{
+  "targetGoal": "一句40字以内的荒诞商业目标，不要复用太空奶茶、黑猩猩大模型、老头乐登月、量子煎饼这些旧梗",
+  "planSummary": "120字以内的离谱实现方案，要包含至少3个具体骚操作，且不要和目标句重复"
+}`;
+
+  try {
+    const data = await requestJson(settings, prompt);
+    const fallback = makeFallbackGoal();
+    return {
+      targetGoal: String(data.targetGoal || data.goal || fallback.targetGoal).trim(),
+      planSummary: String(data.planSummary || data.plan || fallback.planSummary).trim(),
+    };
+  } catch (error) {
+    if (resolveActiveProvider(settings)) throw error;
+    return makeFallbackGoal();
+  }
+}
+
+export async function completeAbsurdPlan(settings: ApiKeySettings, targetGoal: string) {
+  if (!targetGoal.trim()) {
+    throw new Error("请先输入目标，AI 才能帮你补齐离谱实现方案。");
+  }
+
+  const prompt = `
+玩家输入的商业目标是：【${targetGoal}】。
+请只为这个目标补齐一个“一分钟老板”风格的离谱实现方案，不要改写目标。
+要求返回 JSON：
+{
+  "planSummary": "120-180字，包含资金、执行、营销/甩锅三个不同维度的具体骚操作；荒诞但有商业黑话；不要空泛"
+}`;
+
+  const data = await requestJson(settings, prompt);
+  return String(data.planSummary || data.plan || "").trim();
 }
 
 export async function settleGame(settings: ApiKeySettings, payload: {
