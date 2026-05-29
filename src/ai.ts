@@ -95,6 +95,7 @@ export const getProviderLabel = (providerId: AiProviderId | "auto") => {
   return AI_PROVIDERS.find((provider) => provider.id === providerId)?.label || providerId;
 };
 
+
 const ABSURD_GOAL_FALLBACKS = [
   {
     targetGoal: "用会计章鱼建立全球发票海啸交易所，垄断所有公司报销入口",
@@ -200,6 +201,14 @@ function normalizeUniqueOptions(event: Partial<GameEvent>, fallbackRound: number
   const seen = new Set<string>();
   const rawOptions = Array.isArray(event.options) ? event.options : [];
   const fallbackOptions = buildFallbackOptions(fallbackRound);
+function normalizeUniqueOptions(event: Partial<GameEvent>, fallbackRound: number): GameEvent {
+  const seen = new Set<string>();
+  const rawOptions = Array.isArray(event.options) ? event.options : [];
+  const fallbackOptions = [
+    { text: "召开全员降本大会，把会议室空调外包给两只电风扇并发行节能白皮书。", consequence: "财务小幅回暖，但员工开始用离职信折纸飞机" },
+    { text: "宣布高风险资本跃迁，把所有预算砸向一台会喊口号的概念样机。", consequence: "完成度可能暴涨，但合规风险像火箭尾焰一样升空" },
+    { text: "把锅转让给隔壁临时孵化器，用一份玄学并购协议重新包装责任主体。", consequence: "舆论短暂混乱，但后续追责链条变得更加魔幻" },
+  ];
 
   const options = [...rawOptions, ...fallbackOptions]
     .filter((option) => option && typeof option.text === "string")
